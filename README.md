@@ -1,1 +1,2 @@
-# translator_crypto
+#Translate for CRIV Discord Server
+# discord-translator
