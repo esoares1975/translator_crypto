@@ -183,17 +183,18 @@ async function translateText(text, targetLang) {
         return '';
     }
 
-    const cacheKey = `${targetLang}:${text}`;
+    const lang = targetLang.toLowerCase(); // Garante letras minúsculas (ex: 'en')
+    const cacheKey = `${lang}:${text}`;
     if (translationCache.has(cacheKey)) {
         return translationCache.get(cacheKey);
     }
 
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            // O Google Translate espera códigos como 'en', 'es', 'pt', etc.
             const res = await translate(text, { 
-                to: targetLang, 
-                client: 'gtx' // Melhora a estabilidade e evita bloqueios rápidos 
+                to: lang, 
+                forceTo: true, // Ignora o erro estrito de validação do ISO
+                client: 'gtx' 
             });
 
             if (res && res.text) {
@@ -253,7 +254,7 @@ async function getWebhook(channel) {
    READY
 ======================================================= */
 
-client.once('ready', () => {
+client.once('clientReady', () => {
     console.log('========================');
     console.log('BOT ONLINE');
     console.log(client.user.tag);
