@@ -1,10 +1,11 @@
 require('dotenv').config();
 
-process.on('unhandledRejection', console.error);
-process.on('uncaughtException', console.error);
+process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
+process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
 
 const fs = require('fs');
 const express = require('express');
+const { translate } = require('google-translate-api-x');
 
 const {
     Client,
@@ -14,13 +15,12 @@ const {
 } = require('discord.js');
 
 const MAX_DB_SIZE = 2000;
-
 const translationCache = new Map();
 
 setInterval(() => {
     const mem = process.memoryUsage();
     console.log(
-        `[RAM] ${Math.round(mem.heapUsed / 1024 / 1024)} MB`
+        `[RAM] Heap Usado: ${Math.round(mem.heapUsed / 1024 / 1024)} MB`
     );
 }, 60000);
 
@@ -34,18 +34,17 @@ setInterval(() => {
 
 const PORT = process.env.PORT || 8080;
 
-const CHANNELS =
-    JSON.parse(
-        fs.readFileSync(
-            './channels.json',
-            'utf8'
-        )
-    );
-
-console.log('========================');
-console.log('CHANNELS CARREGADOS');
-console.log(CHANNELS);
-console.log('========================');
+let CHANNELS = {};
+try {
+    CHANNELS = JSON.parse(fs.readFileSync('./channels.json', 'utf8'));
+    console.log('========================');
+    console.log('CHANNELS CARREGADOS');
+    console.log(CHANNELS);
+    console.log('========================');
+} catch (err) {
+    console.error('[ERRO] Falha ao ler channels.json:', err.message);
+    process.exit(1);
+}
 
 const MESSAGE_DB = './messages.json';
 
@@ -56,7 +55,7 @@ const MESSAGE_DB = './messages.json';
 const app = express();
 
 app.get('/', (req, res) => {
-    res.send('Translator Bot Online');
+    res.send('Translator Bot Online (Google Translate)');
 });
 
 app.listen(PORT, '0.0.0.0', () => {
@@ -93,27 +92,18 @@ let messageDB = {};
 
 if (fs.existsSync(MESSAGE_DB)) {
     try {
-        messageDB =
-            JSON.parse(
-                fs.readFileSync(
-                    MESSAGE_DB,
-                    'utf8'
-                )
-            );
+        messageDB = JSON.parse(fs.readFileSync(MESSAGE_DB, 'utf8'));
     } catch {
         messageDB = {};
     }
 }
 
 function saveDB() {
-    fs.writeFileSync(
-        MESSAGE_DB,
-        JSON.stringify(
-            messageDB,
-            null,
-            2
-        )
-    );
+    try {
+        fs.writeFileSync(MESSAGE_DB, JSON.stringify(messageDB, null, 2));
+    } catch (err) {
+        console.error('[DB ERROR] Falha ao salvar banco de dados:', err);
+    }
 }
 
 /* =======================================================
@@ -132,7 +122,7 @@ setInterval(() => {
             saveDB();
         }
     } catch (err) {
-        console.log(err);
+        console.error(err);
     }
 }, 1000 * 60 * 10);
 
@@ -141,9 +131,7 @@ setInterval(() => {
 ======================================================= */
 
 function wait(ms) {
-    return new Promise(resolve =>
-        setTimeout(resolve, ms)
-    );
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function sendWithRetry(webhook, payload) {
@@ -187,7 +175,7 @@ async function sendLongMessage(webhook, payload) {
 }
 
 /* =======================================================
-   TRANSLATE
+   TRANSLATE (GOOGLE TRANSLATE)
 ======================================================= */
 
 async function translateText(text, targetLang) {
@@ -202,39 +190,18 @@ async function translateText(text, targetLang) {
 
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 15000);
+            // O Google Translate espera códigos como 'en', 'es', 'pt', etc.
+            const res = await translate(text, { 
+                to: targetLang, 
+                client: 'gtx' // Melhora a estabilidade e evita bloqueios rápidos 
+            });
 
-            const response = await fetch(
-                'https://api-free.deepl.com/v2/translate',
-                {
-                    method: 'POST',
-                    signal: controller.signal,
-                    headers: {
-                        Authorization: `DeepL-Auth-Key ${process.env.DEEPL_API_KEY}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        text: [text],
-                        target_lang: targetLang
-                    })
-                }
-            );
-
-            clearTimeout(timeout);
-
-            if (!response.ok) {
-                await wait(attempt * 1000);
-                continue;
+            if (res && res.text) {
+                translationCache.set(cacheKey, res.text);
+                return res.text;
             }
-
-            const data = await response.json();
-            if (data.translations?.length) {
-                const translated = data.translations[0].text;
-                translationCache.set(cacheKey, translated);
-                return translated;
-            }
-        } catch {
+        } catch (err) {
+            console.log(`[TRANSLATE RETRY ${attempt}]`, err.message);
             await wait(attempt * 1000);
         }
     }
@@ -268,13 +235,12 @@ async function getWebhook(channel) {
             token: hook.token
         });
 
-        webhookCache.set(channel.id, webhook);
-
-        if (webhookCache.size > 20) {
+        if (webhookCache.size >= 20) {
             const firstKey = webhookCache.keys().next().value;
             webhookCache.delete(firstKey);
         }
 
+        webhookCache.set(channel.id, webhook);
         return webhook;
     } catch (err) {
         console.log('[WEBHOOK ERROR]');
@@ -287,7 +253,7 @@ async function getWebhook(channel) {
    READY
 ======================================================= */
 
-client.once('clientReady', () => {
+client.once('ready', () => {
     console.log('========================');
     console.log('BOT ONLINE');
     console.log(client.user.tag);
@@ -295,25 +261,19 @@ client.once('clientReady', () => {
 });
 
 /* =======================================================
-   MESSAGE CREATE (Corrigido)
+   MESSAGE CREATE
 ======================================================= */
 
 client.on('messageCreate', async (message) => {
     try {
-        // Se for um bot e NÃO for uma mensagem de anúncio/sistema, ignora
-        if (message.author.bot && !message.system)
-            return;
+        if (message.author.bot && !message.system) return;
+        if (!CHANNELS[message.channel.id]) return;
 
-        if (!CHANNELS[message.channel.id])
-            return;
-
-        // 1. Tenta pegar o conteúdo normal ou de embeds
         let contentToTranslate = message.content || '';
         if (!contentToTranslate && message.embeds.length > 0) {
             contentToTranslate = message.embeds[0].description || message.embeds[0].title || '';
         }
 
-        // 2. Se for uma mensagem encaminhada nativa, o conteúdo está dentro de messageSnapshots
         if (!contentToTranslate && message.messageSnapshots && message.messageSnapshots.size > 0) {
             const snapshot = message.messageSnapshots.first();
             contentToTranslate = snapshot.content || '';
@@ -322,7 +282,6 @@ client.on('messageCreate', async (message) => {
             }
         }
 
-        // Extrai anexos normais e também os de mensagens encaminhadas se existirem
         const files = [];
         for (const attachment of message.attachments.values()) {
             files.push(attachment.url);
@@ -336,8 +295,7 @@ client.on('messageCreate', async (message) => {
             }
         }
 
-        if (!contentToTranslate && files.length === 0)
-            return;
+        if (!contentToTranslate && files.length === 0) return;
 
         console.log(`[MSG] ${message.author.username}`);
 
@@ -347,14 +305,10 @@ client.on('messageCreate', async (message) => {
 
         for (const [targetChannelId, targetLang] of Object.entries(CHANNELS)) {
             try {
-                if (targetChannelId === message.channel.id) {
-                    continue;
-                }
+                if (targetChannelId === message.channel.id) continue;
 
                 const targetChannel = await client.channels.fetch(targetChannelId);
-                if (!targetChannel) {
-                    continue;
-                }
+                if (!targetChannel) continue;
 
                 let translatedText = contentToTranslate;
                 if (contentToTranslate) {
@@ -398,7 +352,7 @@ client.on('messageCreate', async (message) => {
 });
 
 /* =======================================================
-   MESSAGE UPDATE (Corrigido para Webhooks)
+   MESSAGE UPDATE
 ======================================================= */
 
 client.on('messageUpdate', async (oldMessage, newMessage) => {
@@ -427,7 +381,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
                 const webhook = await getWebhook(targetChannel);
                 if (webhook && idsToEdit.length > 0) {
                     await webhook.editMessage(idsToEdit[0], {
-                        content: translatedText || ' '
+                        content: translatedText.slice(0, 2000) || ' '
                     });
                     await wait(500);
                 }
@@ -444,7 +398,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
 });
 
 /* =======================================================
-   MESSAGE DELETE (Corrigido para Webhooks)
+   MESSAGE DELETE
 ======================================================= */
 
 client.on('messageDelete', async (message) => {
