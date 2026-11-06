@@ -1,15 +1,15 @@
 {
-  "name": "discord-translator",
+  "name": "discord-translator-bot",
   "version": "1.0.0",
-  "description": "Discord Translator Bot",
+  "description": "Bot de tradução do Discord",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "discord.js": "^14.21.0",
-    "dotenv": "^17.4.2",
-    "express": "^4.18.2"
+    "discord.js": "^14.x.x",
+    "dotenv": "^16.x.x",
+    "express": "^4.x.x",
+    "google-translate-api-x": "^1.x.x"
   }
 }
